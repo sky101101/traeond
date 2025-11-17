@@ -7,12 +7,11 @@
 
 import UIKit
 import SnapKit
+import CoreNFC
 
-class HomeViewController: UIViewController, NFCNDEFReaderSessionDelegate, NFCTagReaderSessionDelegate {
+class HomeViewController: UIViewController, NFCManagerDelegate {
     // MARK: - NFC Properties
-    private var nfcSession: NFCNDEFReaderSession?
-    private var nfcTagSession: NFCTagReaderSession?
-    private let testNDEFData = "Hello, NFC!"
+    private let nfcManager = NFCManager.shared
     
     // MARK: - UI Components
     private let scrollView: UIScrollView = {
@@ -90,6 +89,9 @@ class HomeViewController: UIViewController, NFCNDEFReaderSessionDelegate, NFCTag
         super.viewDidLoad()
         setupUI()
         setupCards()
+        
+        // 设置NFC管理器代理
+        nfcManager.delegate = self
     }
     
     override func viewDidLayoutSubviews() {
@@ -261,15 +263,11 @@ class HomeViewController: UIViewController, NFCNDEFReaderSessionDelegate, NFCTag
     
     // MARK: - Actions
     private func handleReadData() {
-        nfcSession = NFCNDEFReaderSession(delegate: self, queue: nil, invalidateAfterFirstRead: false)
-        nfcSession?.alertMessage = "将NFC标签靠近设备"
-        nfcSession?.begin()
+        nfcManager.startReadingNFC()
     }
     
     private func handleWriteData() {
-        nfcTagSession = NFCTagReaderSession(pollingOption: .iso14443, delegate: self, queue: nil)
-        nfcTagSession?.alertMessage = "将NFC标签靠近设备以写入数据"
-        nfcTagSession?.begin()
+        nfcManager.startWritingNFC()
     }
     
     private func handleDelete() {
@@ -284,106 +282,25 @@ class HomeViewController: UIViewController, NFCNDEFReaderSessionDelegate, NFCTag
         showAlert(title: "锁定功能", message: "该功能需要标签支持，请确保您的NFC标签支持锁定操作")
     }
 
-// MARK: - NFCNDEFReaderSessionDelegate Methods
-    func readerSession(_ session: NFCNDEFReaderSession, didDetectNDEFs messages: [NFCNDEFMessage]) {
-        // 处理检测到的NDEF消息
-        for message in messages {
-            for record in message.records {
-                // 解析记录内容
-                let payload = String(data: record.payload, encoding: .utf8)
-                print("检测到NDEF记录: \(record.type) - \(payload ?? "无法解析")")
-            }
-        }
-        
-        DispatchQueue.main.async { [weak self] in
-            self?.showAlert(title: "读取成功", message: "已成功读取NFC标签数据")
-            session.invalidate()
-        }
+// MARK: - NFCManagerDelegate Methods
+    func nfcManager(_ manager: NFCManager, didReadData data: String) {
+        showAlert(title: "读取成功", message: "已成功读取NFC标签数据: \(data)")
     }
     
-    func readerSession(_ session: NFCNDEFReaderSession, didInvalidateWithError error: Error) {
-        // 处理会话错误
-        let nfcError = error as! NFCReaderError
-        if nfcError.code != .readerSessionInvalidationErrorFirstNDEFTagRead && nfcError.code != .readerSessionInvalidationErrorUserCanceled {
-            DispatchQueue.main.async { [weak self] in
-                self?.showAlert(title: "读取失败", message: "\(error.localizedDescription)")
-            }
-        }
-        
-        nfcSession = nil
+    func nfcManager(_ manager: NFCManager, didFailToReadDataWithError error: Error) {
+        showAlert(title: "读取失败", message: "\(error.localizedDescription)")
     }
     
-    // MARK: - NFCTagReaderSessionDelegate Methods
-    func tagReaderSession(_ session: NFCTagReaderSession, didDetect tags: [NFCTag]) {
-        guard let tag = tags.first else {
-            session.invalidate(errorMessage: "未检测到标签")
-            return
-        }
-        
-        // 将NFCTag转换为NFCNDEFTag
-        guard case .ndef(let ndefTag) = tag else {
-            session.invalidate(errorMessage: "标签不支持NDEF")
-            return
-        }
-        
-        session.connect(to: tag) { [weak self] error in
-            guard error == nil else {
-                session.invalidate(errorMessage: "无法连接到标签")
-                return
-            }
-            
-            ndefTag.queryNDEFStatus { [weak self] status, capacity, error in
-                guard error == nil else {
-                    session.invalidate(errorMessage: "无法查询标签状态")
-                    return
-                }
-                
-                switch status {
-                case .notSupported:
-                    session.invalidate(errorMessage: "标签不支持NDEF")
-                case .readOnly:
-                    session.invalidate(errorMessage: "标签是只读的")
-                case .readWrite:
-                    self?.writeNDEFData(to: ndefTag, in: session)
-                @unknown default:
-                    session.invalidate(errorMessage: "未知标签状态")
-                }
-            }
-        }
+    func nfcManagerDidWriteDataSuccessfully(_ manager: NFCManager) {
+        showAlert(title: "写入成功", message: "已成功将数据写入NFC标签")
     }
     
-    private func writeNDEFData(to tag: NFCNDEFTag, in session: NFCTagReaderSession) {
-        // 创建NDEF记录
-        guard let payload = testNDEFData.data(using: .utf8) else {
-            session.invalidate(errorMessage: "无法创建数据")
-            return
-        }
-        
-        let ndefMessage = NFCNDEFMessage(records: [NFCNDEFPayload.wellKnownTypeTextPayload(string: testNDEFData, locale: Locale.current)!])
-        
-        tag.writeNDEF(ndefMessage) { [weak self] error in
-            guard error == nil else {
-                session.invalidate(errorMessage: "写入失败: \(error!.localizedDescription)")
-                return
-            }
-            
-            DispatchQueue.main.async { [weak self] in
-                self?.showAlert(title: "写入成功", message: "已成功将数据写入NFC标签")
-            }
-            
-            session.invalidate()
-        }
+    func nfcManager(_ manager: NFCManager, didFailToWriteDataWithError error: Error) {
+        showAlert(title: "写入失败", message: "\(error.localizedDescription)")
     }
     
-    func tagReaderSession(_ session: NFCTagReaderSession, didInvalidateWithError error: Error) {
-        let nfcError = error as! NFCReaderError
-        if nfcError.code != .readerSessionInvalidationErrorUserCanceled {
-            DispatchQueue.main.async { [weak self] in
-                self?.showAlert(title: "写入失败", message: "\(error.localizedDescription)")
-            }
-        }
-        
-        nfcTagSession = nil
+    func nfcManagerDidCancelOperation(_ manager: NFCManager) {
+        showAlert(title: "操作取消", message: "已取消NFC操作")
     }
     
     // MARK: - Helper Methods
@@ -393,6 +310,8 @@ class HomeViewController: UIViewController, NFCNDEFReaderSessionDelegate, NFCTag
         present(alert, animated: true, completion: nil)
     }
 }
+
+
 
 // MARK: - Custom Tap Gesture Recognizer
 class CardTapGestureRecognizer: UITapGestureRecognizer {
